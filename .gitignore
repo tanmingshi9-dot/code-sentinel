@@ -1,0 +1,64 @@
+# Binaries
+sentinel
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test binary
+*.test
+
+# Output of the go coverage tool
+*.out
+coverage.html
+
+# Dependency directories
+vendor/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Data
+data/*.db
+data/*.db-journal
+
+# Config (keep example)
+configs/config.yaml
+configs/*.pem
+
+# Environment
+.env
+.env.local
+
+# Logs
+*.log
+logs/
+
+# Build
+dist/
+build/
+tmp/
+
+# Debug
+__debug_bin*
+
+# Reference projects
+pr-agent/
+
+# Backup files
+*.bak
+*.backup
+*~.nib
+
+# SQLite
+*.sqlite
+*.sqlite3
