@@ -5,6 +5,7 @@ import (
 	"strconv"
 
 	"code-sentinel/internal/model"
+	"code-sentinel/internal/store"
 
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
@@ -15,8 +16,9 @@ import (
 func (h *Handler) ListRepos(c *gin.Context) {
 	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
 	pageSize, _ := strconv.Atoi(c.DefaultQuery("page_size", "20"))
+	search := c.Query("search")
 
-	repos, total, err := h.store.ListRepos(c.Request.Context(), page, pageSize)
+	repos, total, err := h.store.ListRepos(c.Request.Context(), page, pageSize, search)
 	if err != nil {
 		h.logger.Error("Failed to list repos", zap.Error(err))
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list repos"})
@@ -159,9 +161,17 @@ func (h *Handler) DeleteRepo(c *gin.Context) {
 func (h *Handler) ListReviews(c *gin.Context) {
 	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
 	pageSize, _ := strconv.Atoi(c.DefaultQuery("page_size", "20"))
-	repoFullName := c.Query("repo")
+	prNumber, _ := strconv.Atoi(c.Query("pr_number"))
 
-	reviews, total, err := h.store.ListReviews(c.Request.Context(), repoFullName, page, pageSize)
+	filter := &store.ReviewFilter{
+		RepoFullName: c.Query("repo"),
+		Status:       c.Query("status"),
+		PRNumber:     prNumber,
+		StartDate:    c.Query("start_date"),
+		EndDate:      c.Query("end_date"),
+	}
+
+	reviews, total, err := h.store.ListReviews(c.Request.Context(), filter, page, pageSize)
 	if err != nil {
 		h.logger.Error("Failed to list reviews", zap.Error(err))
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list reviews"})
@@ -239,6 +249,122 @@ func (h *Handler) UpdateConfig(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"code":    0,
 		"message": "success",
+	})
+}
+
+// ToggleRepo 切换仓库状态
+func (h *Handler) ToggleRepo(c *gin.Context) {
+	id, err := strconv.ParseUint(c.Param("id"), 10, 32)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": "invalid id"})
+		return
+	}
+
+	var req struct {
+		Enabled bool `json:"enabled"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": err.Error()})
+		return
+	}
+
+	repo, err := h.repoSvc.ToggleRepo(c.Request.Context(), uint(id), req.Enabled)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"code": 404, "message": "repo not found"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"code":    0,
+		"message": "success",
+		"data":    repo,
+	})
+}
+
+// Feedback handlers
+
+func (h *Handler) ListFeedbacks(c *gin.Context) {
+	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
+	pageSize, _ := strconv.Atoi(c.DefaultQuery("page_size", "20"))
+
+	filter := &store.FeedbackFilter{
+		RepoFullName: c.Query("repo"),
+		Category:     c.Query("category"),
+		Severity:     c.Query("severity"),
+		StartDate:    c.Query("start_date"),
+		EndDate:      c.Query("end_date"),
+	}
+
+	feedbacks, total, err := h.feedbackSvc.ListFeedbacks(c.Request.Context(), filter, page, pageSize)
+	if err != nil {
+		h.logger.Error("Failed to list feedbacks", zap.Error(err))
+		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "failed to list feedbacks"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"code":    0,
+		"message": "success",
+		"data": gin.H{
+			"items":     feedbacks,
+			"total":     total,
+			"page":      page,
+			"page_size": pageSize,
+		},
+	})
+}
+
+func (h *Handler) CreateFeedback(c *gin.Context) {
+	var feedback model.Feedback
+	if err := c.ShouldBindJSON(&feedback); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": err.Error()})
+		return
+	}
+
+	if err := h.feedbackSvc.CreateFeedback(c.Request.Context(), &feedback); err != nil {
+		h.logger.Error("Failed to create feedback", zap.Error(err))
+		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "failed to create feedback"})
+		return
+	}
+
+	c.JSON(http.StatusCreated, gin.H{
+		"code":    0,
+		"message": "success",
+		"data": gin.H{
+			"id":         feedback.ID,
+			"created_at": feedback.CreatedAt,
+		},
+	})
+}
+
+func (h *Handler) GetFeedbackStats(c *gin.Context) {
+	repoFullName := c.Query("repo")
+	startDate := c.Query("start_date")
+	endDate := c.Query("end_date")
+
+	stats, err := h.feedbackSvc.GetFeedbackStats(c.Request.Context(), repoFullName, startDate, endDate)
+	if err != nil {
+		h.logger.Error("Failed to get feedback stats", zap.Error(err))
+		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "failed to get feedback stats"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"code":    0,
+		"message": "success",
+		"data":    stats,
+	})
+}
+
+// GetConfigTemplates 获取配置模板
+func (h *Handler) GetConfigTemplates(c *gin.Context) {
+	templates := h.repoSvc.GetConfigTemplates()
+	c.JSON(http.StatusOK, gin.H{
+		"code":    0,
+		"message": "success",
+		"data": gin.H{
+			"templates": templates,
+		},
 	})
 }
 

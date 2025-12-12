@@ -45,10 +45,12 @@ func main() {
 	// 初始化服务层
 	githubSvc := service.NewGitHubService(cfg.GitHub, logger)
 	llmSvc := service.NewLLMService(cfg.LLM, logger)
+	repoSvc := service.NewRepoService(db, logger)
+	feedbackSvc := service.NewFeedbackService(db, githubSvc, logger)
 	analyzerSvc := service.NewAnalyzerService(githubSvc, llmSvc, db, logger)
 
 	// 初始化 Handler
-	h := handler.NewHandler(analyzerSvc, db, cfg, logger)
+	h := handler.NewHandler(analyzerSvc, repoSvc, feedbackSvc, db, cfg, logger)
 
 	// 设置路由
 	router := gin.New()
@@ -65,15 +67,27 @@ func main() {
 	// API
 	api := router.Group("/api/v1")
 	{
+		// 仓库管理
 		api.GET("/repos", h.ListRepos)
 		api.POST("/repos", h.CreateRepo)
 		api.GET("/repos/:id", h.GetRepo)
 		api.PUT("/repos/:id", h.UpdateRepo)
 		api.DELETE("/repos/:id", h.DeleteRepo)
+		api.PUT("/repos/:id/toggle", h.ToggleRepo)
 
+		// 审查记录
 		api.GET("/reviews", h.ListReviews)
 		api.GET("/reviews/:id", h.GetReview)
 
+		// 反馈管理
+		api.GET("/feedbacks", h.ListFeedbacks)
+		api.POST("/feedbacks", h.CreateFeedback)
+		api.GET("/feedbacks/stats", h.GetFeedbackStats)
+
+		// 配置模板
+		api.GET("/config-templates", h.GetConfigTemplates)
+
+		// 全局配置
 		api.GET("/configs", h.ListConfigs)
 		api.PUT("/configs/:key", h.UpdateConfig)
 	}
