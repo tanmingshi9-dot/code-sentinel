@@ -54,3 +54,29 @@ type PRFile struct {
 	Patch       string `json:"patch"`
 	ContentsURL string `json:"contents_url"`
 }
+
+// IssueCommentEvent GitHub issue_comment 事件
+type IssueCommentEvent struct {
+	Action     string     `json:"action"`
+	Issue      Issue      `json:"issue"`
+	Comment    Comment    `json:"comment"`
+	Repository Repository `json:"repository"`
+	Sender     User       `json:"sender"`
+}
+
+// Issue GitHub Issue/PR
+type Issue struct {
+	Number      int          `json:"number"`
+	Title       string       `json:"title"`
+	State       string       `json:"state"`
+	User        User         `json:"user"`
+	PullRequest *PullRequest `json:"pull_request,omitempty"` // 非空表示是 PR
+}
+
+// Comment GitHub 评论
+type Comment struct {
+	ID        int64  `json:"id"`
+	Body      string `json:"body"`
+	User      User   `json:"user"`
+	CreatedAt string `json:"created_at"`
+}

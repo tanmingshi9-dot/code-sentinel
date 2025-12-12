@@ -30,7 +30,7 @@ func NewSQLiteStore(dbPath string) (*SQLiteStore, error) {
 		return nil, fmt.Errorf("failed to open database: %w", err)
 	}
 
-	if err := db.AutoMigrate(&model.Repo{}, &model.Config{}, &model.Review{}); err != nil {
+	if err := db.AutoMigrate(&model.Repo{}, &model.Config{}, &model.Review{}, &model.Feedback{}); err != nil {
 		return nil, fmt.Errorf("failed to migrate database: %w", err)
 	}
 
@@ -67,14 +67,19 @@ func (s *SQLiteStore) GetRepoByFullName(ctx context.Context, fullName string) (*
 	return &repo, nil
 }
 
-func (s *SQLiteStore) ListRepos(ctx context.Context, page, pageSize int) ([]model.Repo, int64, error) {
+func (s *SQLiteStore) ListRepos(ctx context.Context, page, pageSize int, search string) ([]model.Repo, int64, error) {
 	var repos []model.Repo
 	var total int64
 
-	s.db.WithContext(ctx).Model(&model.Repo{}).Count(&total)
+	query := s.db.WithContext(ctx).Model(&model.Repo{})
+	if search != "" {
+		query = query.Where("full_name LIKE ?", "%"+search+"%")
+	}
+
+	query.Count(&total)
 
 	offset := (page - 1) * pageSize
-	if err := s.db.WithContext(ctx).Order("created_at DESC").Offset(offset).Limit(pageSize).Find(&repos).Error; err != nil {
+	if err := query.Order("last_review_at DESC NULLS LAST, created_at DESC").Offset(offset).Limit(pageSize).Find(&repos).Error; err != nil {
 		return nil, 0, err
 	}
 
@@ -145,13 +150,27 @@ func (s *SQLiteStore) UpdateReview(ctx context.Context, review *model.Review) er
 	return s.db.WithContext(ctx).Save(review).Error
 }
 
-func (s *SQLiteStore) ListReviews(ctx context.Context, repoFullName string, page, pageSize int) ([]model.Review, int64, error) {
+func (s *SQLiteStore) ListReviews(ctx context.Context, filter *ReviewFilter, page, pageSize int) ([]model.Review, int64, error) {
 	var reviews []model.Review
 	var total int64
 
 	query := s.db.WithContext(ctx).Model(&model.Review{})
-	if repoFullName != "" {
-		query = query.Where("repo_full_name = ?", repoFullName)
+	if filter != nil {
+		if filter.RepoFullName != "" {
+			query = query.Where("repo_full_name = ?", filter.RepoFullName)
+		}
+		if filter.Status != "" {
+			query = query.Where("status = ?", filter.Status)
+		}
+		if filter.PRNumber > 0 {
+			query = query.Where("pr_number = ?", filter.PRNumber)
+		}
+		if filter.StartDate != "" {
+			query = query.Where("created_at >= ?", filter.StartDate+" 00:00:00")
+		}
+		if filter.EndDate != "" {
+			query = query.Where("created_at <= ?", filter.EndDate+" 23:59:59")
+		}
 	}
 
 	query.Count(&total)
@@ -162,4 +181,111 @@ func (s *SQLiteStore) ListReviews(ctx context.Context, repoFullName string, page
 	}
 
 	return reviews, total, nil
+}
+
+func (s *SQLiteStore) GetReviewByPR(ctx context.Context, repoFullName string, prNumber int) (*model.Review, error) {
+	var review model.Review
+	if err := s.db.WithContext(ctx).Where("repo_full_name = ? AND pr_number = ?", repoFullName, prNumber).Order("created_at DESC").First(&review).Error; err != nil {
+		return nil, err
+	}
+	return &review, nil
+}
+
+// Feedback methods
+
+func (s *SQLiteStore) CreateFeedback(ctx context.Context, feedback *model.Feedback) error {
+	return s.db.WithContext(ctx).Create(feedback).Error
+}
+
+func (s *SQLiteStore) GetFeedback(ctx context.Context, id uint) (*model.Feedback, error) {
+	var feedback model.Feedback
+	if err := s.db.WithContext(ctx).First(&feedback, id).Error; err != nil {
+		return nil, err
+	}
+	return &feedback, nil
+}
+
+func (s *SQLiteStore) ListFeedbacks(ctx context.Context, filter *FeedbackFilter, page, pageSize int) ([]model.Feedback, int64, error) {
+	var feedbacks []model.Feedback
+	var total int64
+
+	query := s.db.WithContext(ctx).Model(&model.Feedback{})
+	if filter != nil {
+		if filter.RepoFullName != "" {
+			query = query.Where("repo_full_name = ?", filter.RepoFullName)
+		}
+		if filter.Category != "" {
+			query = query.Where("category = ?", filter.Category)
+		}
+		if filter.Severity != "" {
+			query = query.Where("severity = ?", filter.Severity)
+		}
+		if filter.StartDate != "" {
+			query = query.Where("created_at >= ?", filter.StartDate+" 00:00:00")
+		}
+		if filter.EndDate != "" {
+			query = query.Where("created_at <= ?", filter.EndDate+" 23:59:59")
+		}
+	}
+
+	query.Count(&total)
+
+	offset := (page - 1) * pageSize
+	if err := query.Order("created_at DESC").Offset(offset).Limit(pageSize).Find(&feedbacks).Error; err != nil {
+		return nil, 0, err
+	}
+
+	return feedbacks, total, nil
+}
+
+func (s *SQLiteStore) GetFeedbackStats(ctx context.Context, repoFullName string, startDate, endDate string) (*FeedbackStats, error) {
+	stats := &FeedbackStats{
+		ByCategory: make(map[string]int),
+		BySeverity: make(map[string]int),
+	}
+
+	query := s.db.WithContext(ctx).Model(&model.Feedback{})
+	if repoFullName != "" {
+		query = query.Where("repo_full_name = ?", repoFullName)
+	}
+	if startDate != "" {
+		query = query.Where("created_at >= ?", startDate+" 00:00:00")
+	}
+	if endDate != "" {
+		query = query.Where("created_at <= ?", endDate+" 23:59:59")
+	}
+
+	// 总数
+	var total int64
+	query.Count(&total)
+	stats.TotalFeedbacks = int(total)
+
+	// 按 category 统计
+	type categoryCount struct {
+		Category string
+		Count    int
+	}
+	var categoryStats []categoryCount
+	query.Select("category, COUNT(*) as count").Group("category").Scan(&categoryStats)
+	for _, c := range categoryStats {
+		stats.ByCategory[c.Category] = c.Count
+	}
+
+	// 按 severity 统计
+	type severityCount struct {
+		Severity string
+		Count    int
+	}
+	var severityStats []severityCount
+	query.Select("severity, COUNT(*) as count").Group("severity").Scan(&severityStats)
+	for _, s := range severityStats {
+		stats.BySeverity[s.Severity] = s.Count
+	}
+
+	// 误报率（这里简化处理，假设所有反馈都是误报）
+	if stats.TotalFeedbacks > 0 {
+		stats.FalsePositiveRate = 1.0
+	}
+
+	return stats, nil
 }
