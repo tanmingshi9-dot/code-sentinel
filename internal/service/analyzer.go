@@ -209,7 +209,7 @@ func (s *AnalyzerService) getDefaultConfig() *model.ReviewConfig {
 		ReviewFocus:  []string{"security", "performance", "logic"},
 		MinSeverity:  "P2",
 		Languages:    []string{"go", "python", "javascript"},
-		MaxDiffLines: 1000,
+		MaxDiffLines: 10000,
 		AutoReview:   true,
 	}
 }
