@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"encoding/json"
 	"net/http"
 	"strconv"
 
@@ -61,16 +62,23 @@ func (h *Handler) CreateRepo(c *gin.Context) {
 		repo.Name = parts[1]
 	}
 
+	// 记录创建前的 ID，用于判断是新建还是恢复
+	oldID := repo.ID
+
 	if err := h.store.CreateRepo(c.Request.Context(), repo); err != nil {
 		h.logger.Error("Failed to create repo", zap.Error(err))
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create repo"})
 		return
 	}
 
+	// 如果 ID 变了，说明是恢复已删除的仓库
+	restored := oldID == 0 && repo.ID != 0 && repo.ReviewCount > 0
+
 	c.JSON(http.StatusCreated, gin.H{
-		"code":    0,
-		"message": "success",
-		"data":    repo,
+		"code":     0,
+		"message":  "success",
+		"data":     repo,
+		"restored": restored,
 	})
 }
 
@@ -108,8 +116,9 @@ func (h *Handler) UpdateRepo(c *gin.Context) {
 	}
 
 	var req struct {
-		WebhookSecret *string `json:"webhook_secret"`
-		Enabled       *bool   `json:"enabled"`
+		WebhookSecret *string                `json:"webhook_secret"`
+		Enabled       *bool                  `json:"enabled"`
+		Config        map[string]interface{} `json:"config"`
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -117,8 +126,12 @@ func (h *Handler) UpdateRepo(c *gin.Context) {
 		return
 	}
 
-	if req.WebhookSecret != nil {
+	if req.WebhookSecret != nil && *req.WebhookSecret != "" {
 		repo.WebhookSecret = *req.WebhookSecret
+	}
+	if req.Config != nil {
+		configJSON, _ := json.Marshal(req.Config)
+		repo.Config = string(configJSON)
 	}
 	if req.Enabled != nil {
 		repo.Enabled = *req.Enabled

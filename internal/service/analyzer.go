@@ -15,20 +15,40 @@ import (
 )
 
 type AnalyzerService struct {
-	githubSvc *GitHubService
-	llmSvc    *LLMService
-	store     store.Store
-	logger    *zap.Logger
-	builder   *prompt.Builder
+	githubSvc     *GitHubService
+	llmSvc        *LLMService
+	store         store.Store
+	logger        *zap.Logger
+	builder       *prompt.Builder
+	defaultLLMCfg LLMConfig
+	defaultGHCfg  GitHubConfig
 }
 
-func NewAnalyzerService(githubSvc *GitHubService, llmSvc *LLMService, store store.Store, logger *zap.Logger) *AnalyzerService {
+// LLMConfig 用于创建仓库级 LLM 客户端
+type LLMConfig struct {
+	Provider  string
+	APIKey    string
+	Model     string
+	BaseURL   string
+	Timeout   int
+	MaxTokens int
+}
+
+// GitHubConfig 用于创建仓库级 GitHub 客户端
+type GitHubConfig struct {
+	Token   string
+	BaseURL string
+}
+
+func NewAnalyzerService(githubSvc *GitHubService, llmSvc *LLMService, store store.Store, logger *zap.Logger, defaultLLMCfg LLMConfig, defaultGHCfg GitHubConfig) *AnalyzerService {
 	return &AnalyzerService{
-		githubSvc: githubSvc,
-		llmSvc:    llmSvc,
-		store:     store,
-		logger:    logger,
-		builder:   prompt.NewBuilder(),
+		githubSvc:     githubSvc,
+		llmSvc:        llmSvc,
+		store:         store,
+		logger:        logger,
+		builder:       prompt.NewBuilder(),
+		defaultLLMCfg: defaultLLMCfg,
+		defaultGHCfg:  defaultGHCfg,
 	}
 }
 
@@ -51,6 +71,10 @@ func (s *AnalyzerService) AnalyzePR(ctx context.Context, event *model.PullReques
 		return nil
 	}
 
+	// 获取仓库级的 LLM 和 GitHub 服务（如果有自定义配置）
+	llmSvc := s.getLLMService(config)
+	githubSvc := s.getGitHubService(config)
+
 	// 3. 创建审查记录
 	review := &model.Review{
 		RepoFullName: repoFullName,
@@ -72,7 +96,7 @@ func (s *AnalyzerService) AnalyzePR(ctx context.Context, event *model.PullReques
 	startTime := time.Now()
 
 	// 4. 获取 PR Diff
-	diffContent, err := s.githubSvc.GetPRDiff(ctx, repoFullName, prNumber)
+	diffContent, err := githubSvc.GetPRDiff(ctx, repoFullName, prNumber)
 	if err != nil {
 		s.updateReviewFailed(ctx, review, err)
 		return err
@@ -126,7 +150,7 @@ func (s *AnalyzerService) AnalyzePR(ctx context.Context, event *model.PullReques
 	}
 
 	// 8. 调用 LLM
-	result, tokenUsed, err := s.llmSvc.Chat(ctx, systemPrompt, userPrompt)
+	result, tokenUsed, err := llmSvc.Chat(ctx, systemPrompt, userPrompt)
 	if err != nil {
 		s.updateReviewFailed(ctx, review, err)
 		return err
@@ -136,7 +160,7 @@ func (s *AnalyzerService) AnalyzePR(ctx context.Context, event *model.PullReques
 
 	// 9. 解析 JSON 响应
 	reviewResult := s.parseReviewResult(result)
-	reviewResult.Model = s.llmSvc.GetModel()
+	reviewResult.Model = llmSvc.GetModel()
 	reviewResult.Duration = duration.Milliseconds()
 
 	// 10. 按最小严重程度过滤
@@ -144,7 +168,7 @@ func (s *AnalyzerService) AnalyzePR(ctx context.Context, event *model.PullReques
 
 	// 11. 格式化评论
 	comment := s.formatCommentFromResult(reviewResult, tokenUsed, duration, len(changes))
-	if err := s.githubSvc.CreatePRComment(ctx, repoFullName, prNumber, comment); err != nil {
+	if err := githubSvc.CreatePRComment(ctx, repoFullName, prNumber, comment); err != nil {
 		s.updateReviewFailed(ctx, review, err)
 		return err
 	}
@@ -171,6 +195,53 @@ func (s *AnalyzerService) AnalyzePR(ctx context.Context, event *model.PullReques
 	)
 
 	return nil
+}
+
+// getLLMService 获取 LLM 服务（优先使用仓库级配置）
+func (s *AnalyzerService) getLLMService(config *model.ReviewConfig) *LLMService {
+	// 如果仓库有自定义 LLM 配置，创建新的 LLM 客户端
+	if config.LLMAPIKey != "" {
+		cfg := s.defaultLLMCfg
+		cfg.APIKey = config.LLMAPIKey
+		if config.LLMBaseURL != "" {
+			cfg.BaseURL = config.LLMBaseURL
+		}
+		if config.LLMProvider != "" {
+			cfg.Provider = config.LLMProvider
+		}
+		if config.Model != "" {
+			cfg.Model = config.Model
+		}
+		if config.MaxTokens > 0 {
+			cfg.MaxTokens = config.MaxTokens
+		}
+
+		s.logger.Info("Using repo-level LLM config",
+			zap.String("provider", cfg.Provider),
+			zap.String("model", cfg.Model),
+		)
+
+		return NewLLMServiceWithConfig(cfg, s.logger)
+	}
+
+	// 使用默认 LLM 服务
+	return s.llmSvc
+}
+
+// getGitHubService 获取 GitHub 服务（优先使用仓库级配置）
+func (s *AnalyzerService) getGitHubService(config *model.ReviewConfig) *GitHubService {
+	// 如果仓库有自定义 GitHub Token，创建新的 GitHub 客户端
+	if config.GitHubToken != "" {
+		cfg := s.defaultGHCfg
+		cfg.Token = config.GitHubToken
+
+		s.logger.Info("Using repo-level GitHub token")
+
+		return NewGitHubServiceWithConfig(cfg, s.logger)
+	}
+
+	// 使用默认 GitHub 服务
+	return s.githubSvc
 }
 
 // loadRepoConfig 加载仓库配置

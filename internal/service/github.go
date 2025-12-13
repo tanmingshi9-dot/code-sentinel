@@ -118,3 +118,32 @@ func (s *GitHubService) CreatePRComment(ctx context.Context, repoFullName string
 func (s *GitHubService) GetWebhookSecret() string {
 	return s.config.WebhookSecret
 }
+
+// NewGitHubServiceWithConfig 使用简化配置创建 GitHub 服务（用于仓库级配置）
+func NewGitHubServiceWithConfig(cfg GitHubConfig, logger *zap.Logger) *GitHubService {
+	baseURL := cfg.BaseURL
+	if baseURL == "" {
+		baseURL = "https://api.github.com"
+	}
+
+	client := resty.New().
+		SetBaseURL(baseURL).
+		SetHeader("Accept", "application/vnd.github.v3+json").
+		SetHeader("User-Agent", "Code-Sentinel/1.0").
+		SetTimeout(30 * time.Second).
+		SetRetryCount(3).
+		SetRetryWaitTime(1 * time.Second)
+
+	if cfg.Token != "" {
+		client.SetHeader("Authorization", "Bearer "+cfg.Token)
+	}
+
+	return &GitHubService{
+		client: client,
+		config: config.GitHubConfig{
+			Token:   cfg.Token,
+			BaseURL: baseURL,
+		},
+		logger: logger,
+	}
+}

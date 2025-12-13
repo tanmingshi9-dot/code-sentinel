@@ -94,3 +94,45 @@ func (s *LLMService) Chat(ctx context.Context, systemPrompt, userPrompt string) 
 func (s *LLMService) GetModel() string {
 	return s.config.Model
 }
+
+// NewLLMServiceWithConfig 使用简化配置创建 LLM 服务（用于仓库级配置）
+func NewLLMServiceWithConfig(cfg LLMConfig, logger *zap.Logger) *LLMService {
+	baseURL := cfg.BaseURL
+	if baseURL == "" {
+		baseURL = "https://api.openai.com/v1"
+	}
+
+	timeout := cfg.Timeout
+	if timeout == 0 {
+		timeout = 60
+	}
+
+	maxTokens := cfg.MaxTokens
+	if maxTokens == 0 {
+		maxTokens = 4096
+	}
+
+	client := resty.New().
+		SetBaseURL(baseURL).
+		SetHeader("Content-Type", "application/json").
+		SetTimeout(time.Duration(timeout) * time.Second).
+		SetRetryCount(2).
+		SetRetryWaitTime(2 * time.Second)
+
+	if cfg.APIKey != "" {
+		client.SetHeader("Authorization", "Bearer "+cfg.APIKey)
+	}
+
+	return &LLMService{
+		client: client,
+		config: config.LLMConfig{
+			Provider:  cfg.Provider,
+			APIKey:    cfg.APIKey,
+			Model:     cfg.Model,
+			BaseURL:   baseURL,
+			Timeout:   timeout,
+			MaxTokens: maxTokens,
+		},
+		logger: logger,
+	}
+}
