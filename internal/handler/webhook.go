@@ -24,10 +24,31 @@ func (h *Handler) HandleGitHubWebhook(c *gin.Context) {
 		return
 	}
 
+	// 先解析 payload 获取仓库名
+	var payload struct {
+		Repository struct {
+			FullName string `json:"full_name"`
+		} `json:"repository"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		h.logger.Error("Failed to parse webhook payload", zap.Error(err))
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid payload"})
+		return
+	}
+
+	// 获取仓库级的 webhook_secret，如果没有则用全局配置
 	webhookSecret := h.config.GitHub.WebhookSecret
+	if payload.Repository.FullName != "" {
+		repo, err := h.store.GetRepoByFullName(c.Request.Context(), payload.Repository.FullName)
+		if err == nil && repo.WebhookSecret != "" {
+			webhookSecret = repo.WebhookSecret
+		}
+	}
+
 	if !signature.VerifyGitHubSignature(body, sig, webhookSecret) {
 		h.logger.Warn("Invalid webhook signature",
 			zap.String("event", eventType),
+			zap.String("repo", payload.Repository.FullName),
 		)
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid signature"})
 		return
@@ -35,6 +56,7 @@ func (h *Handler) HandleGitHubWebhook(c *gin.Context) {
 
 	h.logger.Info("Received GitHub webhook",
 		zap.String("event", eventType),
+		zap.String("repo", payload.Repository.FullName),
 	)
 
 	switch eventType {

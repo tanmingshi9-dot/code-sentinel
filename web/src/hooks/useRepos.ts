@@ -15,6 +15,8 @@ export function useRepos(params: RepoListParams = {}) {
   return useQuery({
     queryKey: repoKeys.list(params),
     queryFn: () => reposApi.list(params),
+    staleTime: 0,
+    refetchOnMount: true,
   });
 }
 

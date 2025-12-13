@@ -12,6 +12,8 @@ export function useFeedbacks(params: FeedbackListParams = {}) {
   return useQuery({
     queryKey: feedbackKeys.list(params),
     queryFn: () => feedbacksApi.list(params),
+    staleTime: 0,
+    refetchOnMount: true,
   });
 }
 

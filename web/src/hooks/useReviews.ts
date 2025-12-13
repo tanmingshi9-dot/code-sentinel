@@ -13,6 +13,8 @@ export function useReviews(params: ReviewListParams = {}) {
   return useQuery({
     queryKey: reviewKeys.list(params),
     queryFn: () => reviewsApi.list(params),
+    staleTime: 0,
+    refetchOnMount: true,
   });
 }
 

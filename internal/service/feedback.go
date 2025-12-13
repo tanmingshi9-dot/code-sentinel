@@ -14,18 +14,45 @@ import (
 
 // FeedbackService 误报反馈服务
 type FeedbackService struct {
-	store     store.Store
-	githubSvc *GitHubService
-	logger    *zap.Logger
+	store        store.Store
+	githubSvc    *GitHubService
+	logger       *zap.Logger
+	defaultGHCfg GitHubConfig
 }
 
 // NewFeedbackService 创建 FeedbackService 实例
-func NewFeedbackService(store store.Store, githubSvc *GitHubService, logger *zap.Logger) *FeedbackService {
+func NewFeedbackService(store store.Store, githubSvc *GitHubService, logger *zap.Logger, defaultGHCfg GitHubConfig) *FeedbackService {
 	return &FeedbackService{
-		store:     store,
-		githubSvc: githubSvc,
-		logger:    logger,
+		store:        store,
+		githubSvc:    githubSvc,
+		logger:       logger,
+		defaultGHCfg: defaultGHCfg,
 	}
+}
+
+// getGitHubService 获取 GitHub 服务（优先使用仓库级配置）
+func (s *FeedbackService) getGitHubService(ctx context.Context, repoFullName string) *GitHubService {
+	repo, err := s.store.GetRepoByFullName(ctx, repoFullName)
+	if err != nil {
+		return s.githubSvc
+	}
+
+	if repo.Config == "" {
+		return s.githubSvc
+	}
+
+	var config model.ReviewConfig
+	if err := json.Unmarshal([]byte(repo.Config), &config); err != nil {
+		return s.githubSvc
+	}
+
+	if config.GitHubToken != "" {
+		cfg := s.defaultGHCfg
+		cfg.Token = config.GitHubToken
+		return NewGitHubServiceWithConfig(cfg, s.logger)
+	}
+
+	return s.githubSvc
 }
 
 // HandleFalseCommand 处理 /false 命令
@@ -59,43 +86,77 @@ func (s *FeedbackService) HandleFalseCommand(ctx context.Context, event *model.I
 		return err
 	}
 
-	// 为每个 issue 创建反馈记录
-	for i, issue := range reviewResult.Issues {
+	// 创建反馈记录
+	if len(reviewResult.Issues) > 0 {
+		// 误报：AI 报告了问题，但用户认为不是问题
+		for i, issue := range reviewResult.Issues {
+			feedback := &model.Feedback{
+				ReviewID:        review.ID,
+				RepoFullName:    review.RepoFullName,
+				PRNumber:        review.PRNumber,
+				File:            issue.File,
+				Line:            issue.Line,
+				IssueIndex:      i,
+				Severity:        issue.Severity,
+				Category:        issue.Category,
+				Title:           issue.Title,
+				AIContent:       issue.Description,
+				IsFalsePositive: true,
+				Reason:          reason,
+				Reporter:        event.Comment.User.Login,
+			}
+
+			if err := s.store.CreateFeedback(ctx, feedback); err != nil {
+				s.logger.Error("Failed to create feedback",
+					zap.Uint("review_id", review.ID),
+					zap.Int("issue_index", i),
+					zap.Error(err),
+				)
+			}
+		}
+	} else {
+		// 漏报：AI 没报告问题，但用户认为有问题
 		feedback := &model.Feedback{
 			ReviewID:        review.ID,
 			RepoFullName:    review.RepoFullName,
 			PRNumber:        review.PRNumber,
-			File:            issue.File,
-			Line:            issue.Line,
-			IssueIndex:      i,
-			Severity:        issue.Severity,
-			Category:        issue.Category,
-			Title:           issue.Title,
-			AIContent:       issue.Description,
-			IsFalsePositive: true,
+			File:            "",
+			Line:            0,
+			IssueIndex:      -1,
+			Severity:        "",
+			Category:        "missed",
+			Title:           "AI 漏报",
+			AIContent:       reviewResult.Summary,
+			IsFalsePositive: false, // 这是漏报，不是误报
 			Reason:          reason,
 			Reporter:        event.Comment.User.Login,
 		}
 
 		if err := s.store.CreateFeedback(ctx, feedback); err != nil {
-			s.logger.Error("Failed to create feedback",
+			s.logger.Error("Failed to create feedback for missed issue",
 				zap.Uint("review_id", review.ID),
-				zap.Int("issue_index", i),
 				zap.Error(err),
 			)
 		}
 	}
 
+	feedbackType := "误报"
+	if len(reviewResult.Issues) == 0 {
+		feedbackType = "漏报"
+	}
+
 	s.logger.Info("Feedback recorded",
 		zap.String("repo", event.Repository.FullName),
 		zap.Int("pr_number", event.Issue.Number),
+		zap.String("type", feedbackType),
 		zap.Int("issues_count", len(reviewResult.Issues)),
 		zap.String("reporter", event.Comment.User.Login),
 	)
 
-	// 回复确认评论
+	// 回复确认评论（使用仓库级 GitHub Token）
+	githubSvc := s.getGitHubService(ctx, event.Repository.FullName)
 	reply := "✅ 已记录反馈，感谢您的反馈！我们会持续改进审查质量。"
-	if err := s.githubSvc.CreatePRComment(ctx, event.Repository.FullName, event.Issue.Number, reply); err != nil {
+	if err := githubSvc.CreatePRComment(ctx, event.Repository.FullName, event.Issue.Number, reply); err != nil {
 		s.logger.Warn("Failed to reply feedback confirmation",
 			zap.String("repo", event.Repository.FullName),
 			zap.Int("pr_number", event.Issue.Number),

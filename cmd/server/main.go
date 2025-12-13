@@ -46,7 +46,7 @@ func main() {
 	githubSvc := service.NewGitHubService(cfg.GitHub, logger)
 	llmSvc := service.NewLLMService(cfg.LLM, logger)
 	repoSvc := service.NewRepoService(db, logger)
-	feedbackSvc := service.NewFeedbackService(db, githubSvc, logger)
+
 	// 构建默认配置用于仓库级覆盖
 	defaultLLMCfg := service.LLMConfig{
 		Provider:  cfg.LLM.Provider,
@@ -60,6 +60,8 @@ func main() {
 		Token:   cfg.GitHub.Token,
 		BaseURL: cfg.GitHub.BaseURL,
 	}
+
+	feedbackSvc := service.NewFeedbackService(db, githubSvc, logger, defaultGHCfg)
 	analyzerSvc := service.NewAnalyzerService(githubSvc, llmSvc, db, logger, defaultLLMCfg, defaultGHCfg)
 
 	// 初始化 Handler

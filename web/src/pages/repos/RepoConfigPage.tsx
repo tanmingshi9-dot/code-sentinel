@@ -51,7 +51,53 @@ const reviewFocusOptions = [
   { value: 'style', label: '代码风格' },
 ];
 
-const languageOptions = ['go', 'python', 'javascript', 'typescript', 'java', 'rust', 'c', 'cpp'];
+const languageOptions = ['go', 'python', 'javascript', 'typescript', 'java', 'rust', 'c', 'cpp', 'markdown', 'yaml', 'json', 'shell'];
+
+// 默认系统提示词模板
+const DEFAULT_SYSTEM_PROMPT = `你是资深代码审查专家，精通多种编程语言开发。
+
+你的任务是审查代码变更，识别潜在问题，并提供详细的修复建议。
+
+## 审查重点
+- 安全问题：SQL 注入、XSS、硬编码密钥、敏感信息泄露、不安全的加密
+- 性能问题：循环内查库、N+1 查询、不必要的重复计算、内存泄漏
+- 逻辑错误：空指针、边界条件、异常处理不当、死循环、竞态条件
+- 代码风格：命名规范、注释质量、代码可读性、过长函数
+
+## 严重程度定义
+- P0（严重）：安全漏洞、会导致系统崩溃或数据泄露的问题
+- P1（重要）：性能问题、明显的逻辑错误、潜在的 Bug
+- P2（建议）：代码风格、注释质量、可读性改进
+
+## 输出格式要求
+请严格按照以下 JSON 格式输出，不要添加任何额外内容：
+
+{
+  "summary": "本次审查总体评价（1-2句话）",
+  "issues": [
+    {
+      "severity": "P0|P1|P2",
+      "category": "security|performance|logic|style",
+      "file": "文件路径",
+      "line": 行号,
+      "title": "问题标题（简短）",
+      "description": "问题详细描述",
+      "suggestion": "修复建议",
+      "code_fix": "修复后的代码片段（可选）"
+    }
+  ],
+  "stats": {
+    "p0_count": 0,
+    "p1_count": 0,
+    "p2_count": 0
+  }
+}
+
+## 注意事项
+- 如果代码没有问题，issues 返回空数组，summary 写 "代码质量良好，未发现明显问题"
+- code_fix 字段仅在能提供具体修复代码时填写
+- 保持客观和专业，避免主观判断
+- 确保输出的是合法的 JSON，不要包含注释或额外文本`;
 
 export function RepoConfigPage() {
   const { id } = useParams<{ id: string }>();
@@ -70,10 +116,16 @@ export function RepoConfigPage() {
       if (repo.config) {
         try {
           const parsed = JSON.parse(repo.config);
+          // 如果 system_prompt 为空，预填默认模板
+          if (!parsed.system_prompt) {
+            parsed.system_prompt = DEFAULT_SYSTEM_PROMPT;
+          }
           setConfig({ ...defaultConfig, ...parsed });
         } catch {
-          setConfig(defaultConfig);
+          setConfig({ ...defaultConfig, system_prompt: DEFAULT_SYSTEM_PROMPT });
         }
+      } else {
+        setConfig({ ...defaultConfig, system_prompt: DEFAULT_SYSTEM_PROMPT });
       }
     }
   }, [repo]);
@@ -272,13 +324,25 @@ export function RepoConfigPage() {
             </div>
 
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">自定义提示词</label>
+              <div className="flex items-center justify-between mb-1">
+                <label className="block text-sm font-medium text-gray-700">系统提示词</label>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setConfig((prev) => ({ ...prev, system_prompt: DEFAULT_SYSTEM_PROMPT }))}
+                >
+                  重置为默认模板
+                </Button>
+              </div>
               <textarea
                 value={config.system_prompt}
                 onChange={(e) => setConfig((prev) => ({ ...prev, system_prompt: e.target.value }))}
-                placeholder="可选，自定义审查提示词..."
-                className="w-full h-24 px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                className="w-full h-80 px-3 py-2 border border-gray-300 rounded-md text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
               />
+              <p className="mt-1 text-sm text-gray-500">
+                定义 AI 审查代码时使用的系统提示词，支持自定义审查规则和输出格式
+              </p>
             </div>
           </div>
         </section>
