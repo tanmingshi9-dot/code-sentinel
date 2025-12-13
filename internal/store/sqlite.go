@@ -48,7 +48,34 @@ func (s *SQLiteStore) Ping(ctx context.Context) error {
 // Repo methods
 
 func (s *SQLiteStore) CreateRepo(ctx context.Context, repo *model.Repo) error {
-	return s.db.WithContext(ctx).Create(repo).Error
+	// 先查找是否存在（包括软删除的）
+	var existing model.Repo
+	err := s.db.WithContext(ctx).Unscoped().Where("full_name = ?", repo.FullName).First(&existing).Error
+
+	if err == nil {
+		// 存在，恢复并更新
+		existing.DeletedAt = gorm.DeletedAt{}
+		existing.Enabled = true
+		existing.Owner = repo.Owner
+		existing.Name = repo.Name
+		if repo.WebhookSecret != "" {
+			existing.WebhookSecret = repo.WebhookSecret
+		}
+		if err := s.db.WithContext(ctx).Save(&existing).Error; err != nil {
+			return err
+		}
+		// 把 ID 回填给调用方
+		repo.ID = existing.ID
+		repo.CreatedAt = existing.CreatedAt
+		repo.UpdatedAt = existing.UpdatedAt
+		return nil
+	}
+
+	if err == gorm.ErrRecordNotFound {
+		return s.db.WithContext(ctx).Create(repo).Error
+	}
+
+	return err
 }
 
 func (s *SQLiteStore) GetRepo(ctx context.Context, id uint) (*model.Repo, error) {

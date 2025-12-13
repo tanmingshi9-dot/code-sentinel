@@ -10,12 +10,20 @@ GOMOD=$(GOCMD) mod
 BINARY_NAME=sentinel
 
 # Build the application
-build:
+build: build-web
 	$(GOBUILD) -o $(BINARY_NAME) ./cmd/server
+
+# Build frontend
+build-web:
+	cd web && npm install && npm run build
 
 # Run the application
 run:
 	$(GORUN) ./cmd/server
+
+# Run frontend dev server
+dev-web:
+	cd web && npm run dev
 
 # Run tests
 test:
@@ -36,6 +44,7 @@ clean:
 	rm -f $(BINARY_NAME)
 	rm -f coverage.out coverage.html
 	rm -rf ./data/*.db
+	rm -rf ./web/dist
 
 # Build Docker image
 docker:

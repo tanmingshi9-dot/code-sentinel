@@ -8,41 +8,18 @@ database:
   path: ./data/sentinel.db
 
 github:
-  # GitHub App 配置（推荐）
-  # app_id: 123456
-  # installation_id: 789012
-  # private_key_path: ./configs/github-app.pem
-  
-  # 或使用 Personal Access Token
-  token: your-github-token-here
-  webhook_secret: your-webhook-secret-here
+  # 全局默认配置，可被仓库级配置覆盖
+  # token: your-github-token
   base_url: https://api.github.com
 
 llm:
-  provider: openai  # openai / azure / ollama
-  api_key: your-openai-api-key-here
-  model: gpt-4
+  # 全局默认配置，可被仓库级配置覆盖
+  provider: openai
+  # api_key: your-api-key
+  model: gpt-4-turbo
   base_url: https://api.openai.com/v1
-  timeout: 60  # seconds
+  timeout: 60
   max_tokens: 4096
-
-review:
-  languages:
-    - go
-    - java
-    - python
-  max_diff_lines: 500
-  ignore_patterns:
-    - "*.md"
-    - "*.json"
-    - "*.yaml"
-    - "*.yml"
-    - "go.mod"
-    - "go.sum"
-    - "package.json"
-    - "package-lock.json"
-    - "vendor/*"
-    - "node_modules/*"
 
 log:
   level: info  # debug / info / warn / error

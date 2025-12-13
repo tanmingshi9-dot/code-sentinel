@@ -46,8 +46,23 @@ func main() {
 	githubSvc := service.NewGitHubService(cfg.GitHub, logger)
 	llmSvc := service.NewLLMService(cfg.LLM, logger)
 	repoSvc := service.NewRepoService(db, logger)
-	feedbackSvc := service.NewFeedbackService(db, githubSvc, logger)
-	analyzerSvc := service.NewAnalyzerService(githubSvc, llmSvc, db, logger)
+
+	// 构建默认配置用于仓库级覆盖
+	defaultLLMCfg := service.LLMConfig{
+		Provider:  cfg.LLM.Provider,
+		APIKey:    cfg.LLM.APIKey,
+		Model:     cfg.LLM.Model,
+		BaseURL:   cfg.LLM.BaseURL,
+		Timeout:   cfg.LLM.Timeout,
+		MaxTokens: cfg.LLM.MaxTokens,
+	}
+	defaultGHCfg := service.GitHubConfig{
+		Token:   cfg.GitHub.Token,
+		BaseURL: cfg.GitHub.BaseURL,
+	}
+
+	feedbackSvc := service.NewFeedbackService(db, githubSvc, logger, defaultGHCfg)
+	analyzerSvc := service.NewAnalyzerService(githubSvc, llmSvc, db, logger, defaultLLMCfg, defaultGHCfg)
 
 	// 初始化 Handler
 	h := handler.NewHandler(analyzerSvc, repoSvc, feedbackSvc, db, cfg, logger)
@@ -63,6 +78,19 @@ func main() {
 
 	// Webhook
 	router.POST("/webhook/github", h.HandleGitHubWebhook)
+
+	// 静态文件服务（前端）
+	router.Static("/assets", "./web/dist/assets")
+	router.StaticFile("/vite.svg", "./web/dist/vite.svg")
+	router.NoRoute(func(c *gin.Context) {
+		// API 路由返回 404
+		if len(c.Request.URL.Path) >= 4 && c.Request.URL.Path[:4] == "/api" {
+			c.JSON(http.StatusNotFound, gin.H{"code": 404, "message": "not found"})
+			return
+		}
+		// 其他路由返回 index.html（SPA）
+		c.File("./web/dist/index.html")
+	})
 
 	// API
 	api := router.Group("/api/v1")

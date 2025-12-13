@@ -34,6 +34,13 @@ type ReviewConfig struct {
 	IgnoreFiles  []string `json:"ignore_files"`   // 忽略文件: *.test.go
 	MaxDiffLines int      `json:"max_diff_lines"` // 最大 Diff 行数
 	AutoReview   bool     `json:"auto_review"`    // 是否自动审查
+
+	// 仓库级 LLM 配置（可选，覆盖全局配置）
+	LLMAPIKey  string `json:"llm_api_key,omitempty"`  // LLM API Key
+	LLMBaseURL string `json:"llm_base_url,omitempty"` // LLM API Base URL
+
+	// 仓库级 GitHub 配置（可选，覆盖全局配置）
+	GitHubToken string `json:"github_token,omitempty"` // GitHub Personal Access Token
 }
 
 type Config struct {

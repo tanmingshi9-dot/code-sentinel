@@ -14,21 +14,87 @@ import (
 	"go.uber.org/zap"
 )
 
-type AnalyzerService struct {
-	githubSvc *GitHubService
-	llmSvc    *LLMService
-	store     store.Store
-	logger    *zap.Logger
-	builder   *prompt.Builder
+// 默认系统提示词（当仓库未配置时使用）
+const defaultSystemPrompt = `你是资深代码审查专家，精通多种编程语言开发。
+
+你的任务是审查代码变更，识别潜在问题，并提供详细的修复建议。
+
+## 审查重点
+- 安全问题：SQL 注入、XSS、硬编码密钥、敏感信息泄露、不安全的加密
+- 性能问题：循环内查库、N+1 查询、不必要的重复计算、内存泄漏
+- 逻辑错误：空指针、边界条件、异常处理不当、死循环、竞态条件
+- 代码风格：命名规范、注释质量、代码可读性、过长函数
+
+## 严重程度定义
+- P0（严重）：安全漏洞、会导致系统崩溃或数据泄露的问题
+- P1（重要）：性能问题、明显的逻辑错误、潜在的 Bug
+- P2（建议）：代码风格、注释质量、可读性改进
+
+## 输出格式要求
+请严格按照以下 JSON 格式输出，不要添加任何额外内容：
+
+{
+  "summary": "本次审查总体评价（1-2句话）",
+  "issues": [
+    {
+      "severity": "P0|P1|P2",
+      "category": "security|performance|logic|style",
+      "file": "文件路径",
+      "line": 行号,
+      "title": "问题标题（简短）",
+      "description": "问题详细描述",
+      "suggestion": "修复建议",
+      "code_fix": "修复后的代码片段（可选）"
+    }
+  ],
+  "stats": {
+    "p0_count": 0,
+    "p1_count": 0,
+    "p2_count": 0
+  }
 }
 
-func NewAnalyzerService(githubSvc *GitHubService, llmSvc *LLMService, store store.Store, logger *zap.Logger) *AnalyzerService {
+## 注意事项
+- 如果代码没有问题，issues 返回空数组，summary 写 "代码质量良好，未发现明显问题"
+- code_fix 字段仅在能提供具体修复代码时填写
+- 保持客观和专业，避免主观判断
+- 确保输出的是合法的 JSON，不要包含注释或额外文本`
+
+type AnalyzerService struct {
+	githubSvc     *GitHubService
+	llmSvc        *LLMService
+	store         store.Store
+	logger        *zap.Logger
+	builder       *prompt.Builder
+	defaultLLMCfg LLMConfig
+	defaultGHCfg  GitHubConfig
+}
+
+// LLMConfig 用于创建仓库级 LLM 客户端
+type LLMConfig struct {
+	Provider  string
+	APIKey    string
+	Model     string
+	BaseURL   string
+	Timeout   int
+	MaxTokens int
+}
+
+// GitHubConfig 用于创建仓库级 GitHub 客户端
+type GitHubConfig struct {
+	Token   string
+	BaseURL string
+}
+
+func NewAnalyzerService(githubSvc *GitHubService, llmSvc *LLMService, store store.Store, logger *zap.Logger, defaultLLMCfg LLMConfig, defaultGHCfg GitHubConfig) *AnalyzerService {
 	return &AnalyzerService{
-		githubSvc: githubSvc,
-		llmSvc:    llmSvc,
-		store:     store,
-		logger:    logger,
-		builder:   prompt.NewBuilder(),
+		githubSvc:     githubSvc,
+		llmSvc:        llmSvc,
+		store:         store,
+		logger:        logger,
+		builder:       prompt.NewBuilder(),
+		defaultLLMCfg: defaultLLMCfg,
+		defaultGHCfg:  defaultGHCfg,
 	}
 }
 
@@ -51,6 +117,10 @@ func (s *AnalyzerService) AnalyzePR(ctx context.Context, event *model.PullReques
 		return nil
 	}
 
+	// 获取仓库级的 LLM 和 GitHub 服务（如果有自定义配置）
+	llmSvc := s.getLLMService(config)
+	githubSvc := s.getGitHubService(config)
+
 	// 3. 创建审查记录
 	review := &model.Review{
 		RepoFullName: repoFullName,
@@ -72,7 +142,7 @@ func (s *AnalyzerService) AnalyzePR(ctx context.Context, event *model.PullReques
 	startTime := time.Now()
 
 	// 4. 获取 PR Diff
-	diffContent, err := s.githubSvc.GetPRDiff(ctx, repoFullName, prNumber)
+	diffContent, err := githubSvc.GetPRDiff(ctx, repoFullName, prNumber)
 	if err != nil {
 		s.updateReviewFailed(ctx, review, err)
 		return err
@@ -113,20 +183,19 @@ func (s *AnalyzerService) AnalyzePR(ctx context.Context, event *model.PullReques
 		return nil
 	}
 
-	// 7. 构建提示词（使用配置）
-	promptConfig := &prompt.ReviewConfig{
-		Languages:    config.Languages,
-		ReviewFocus:  config.ReviewFocus,
-		CustomPrompt: config.SystemPrompt,
+	// 7. 构建提示词
+	systemPrompt := config.SystemPrompt
+	if systemPrompt == "" {
+		systemPrompt = defaultSystemPrompt
 	}
-	systemPrompt, userPrompt, err := s.builder.BuildWithConfig(changes, promptConfig)
+	userPrompt, err := s.builder.BuildUserPrompt(changes)
 	if err != nil {
 		s.updateReviewFailed(ctx, review, err)
 		return err
 	}
 
 	// 8. 调用 LLM
-	result, tokenUsed, err := s.llmSvc.Chat(ctx, systemPrompt, userPrompt)
+	result, tokenUsed, err := llmSvc.Chat(ctx, systemPrompt, userPrompt)
 	if err != nil {
 		s.updateReviewFailed(ctx, review, err)
 		return err
@@ -136,7 +205,7 @@ func (s *AnalyzerService) AnalyzePR(ctx context.Context, event *model.PullReques
 
 	// 9. 解析 JSON 响应
 	reviewResult := s.parseReviewResult(result)
-	reviewResult.Model = s.llmSvc.GetModel()
+	reviewResult.Model = llmSvc.GetModel()
 	reviewResult.Duration = duration.Milliseconds()
 
 	// 10. 按最小严重程度过滤
@@ -144,7 +213,7 @@ func (s *AnalyzerService) AnalyzePR(ctx context.Context, event *model.PullReques
 
 	// 11. 格式化评论
 	comment := s.formatCommentFromResult(reviewResult, tokenUsed, duration, len(changes))
-	if err := s.githubSvc.CreatePRComment(ctx, repoFullName, prNumber, comment); err != nil {
+	if err := githubSvc.CreatePRComment(ctx, repoFullName, prNumber, comment); err != nil {
 		s.updateReviewFailed(ctx, review, err)
 		return err
 	}
@@ -171,6 +240,53 @@ func (s *AnalyzerService) AnalyzePR(ctx context.Context, event *model.PullReques
 	)
 
 	return nil
+}
+
+// getLLMService 获取 LLM 服务（优先使用仓库级配置）
+func (s *AnalyzerService) getLLMService(config *model.ReviewConfig) *LLMService {
+	// 如果仓库有自定义 LLM 配置，创建新的 LLM 客户端
+	if config.LLMAPIKey != "" {
+		cfg := s.defaultLLMCfg
+		cfg.APIKey = config.LLMAPIKey
+		if config.LLMBaseURL != "" {
+			cfg.BaseURL = config.LLMBaseURL
+		}
+		if config.LLMProvider != "" {
+			cfg.Provider = config.LLMProvider
+		}
+		if config.Model != "" {
+			cfg.Model = config.Model
+		}
+		if config.MaxTokens > 0 {
+			cfg.MaxTokens = config.MaxTokens
+		}
+
+		s.logger.Info("Using repo-level LLM config",
+			zap.String("provider", cfg.Provider),
+			zap.String("model", cfg.Model),
+		)
+
+		return NewLLMServiceWithConfig(cfg, s.logger)
+	}
+
+	// 使用默认 LLM 服务
+	return s.llmSvc
+}
+
+// getGitHubService 获取 GitHub 服务（优先使用仓库级配置）
+func (s *AnalyzerService) getGitHubService(config *model.ReviewConfig) *GitHubService {
+	// 如果仓库有自定义 GitHub Token，创建新的 GitHub 客户端
+	if config.GitHubToken != "" {
+		cfg := s.defaultGHCfg
+		cfg.Token = config.GitHubToken
+
+		s.logger.Info("Using repo-level GitHub token")
+
+		return NewGitHubServiceWithConfig(cfg, s.logger)
+	}
+
+	// 使用默认 GitHub 服务
+	return s.githubSvc
 }
 
 // loadRepoConfig 加载仓库配置
@@ -209,7 +325,7 @@ func (s *AnalyzerService) getDefaultConfig() *model.ReviewConfig {
 		ReviewFocus:  []string{"security", "performance", "logic"},
 		MinSeverity:  "P2",
 		Languages:    []string{"go", "python", "javascript"},
-		MaxDiffLines: 1000,
+		MaxDiffLines: 10000,
 		AutoReview:   true,
 	}
 }
